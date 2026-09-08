@@ -38,6 +38,17 @@ public class HrmsRetryExecutor {
     public HrmsRetryExecutor(HrmsProperties.Retry config, Sleeper sleeper) {
         this.config = config;
         this.sleeper = sleeper;
+
+        if (config.isBelowMinimum()) {
+            log.warn("payroll.hrms.retry.max-attempts is {}, below the floor of {}; using {}. "
+                            + "The HRMS drops requests, so fewer than {} retries cannot tell a blip from an outage.",
+                    config.getMaxAttempts(), HrmsProperties.Retry.MIN_ATTEMPTS,
+                    config.effectiveMaxAttempts(), HrmsProperties.Retry.MIN_RETRIES);
+        }
+        log.info("HRMS retry policy: {} attempts ({} retries), backoff {}..{} x{} with {}% jitter",
+                config.effectiveMaxAttempts(), config.effectiveMaxAttempts() - 1,
+                config.getInitialBackoff(), config.getMaxBackoff(),
+                config.getMultiplier(), Math.round(config.getJitter() * 100));
     }
 
     /**
@@ -48,7 +59,7 @@ public class HrmsRetryExecutor {
      *                          failure is not retryable
      */
     public <T> T execute(String description, HrmsCall<T> call) {
-        int maxAttempts = Math.max(1, config.getMaxAttempts());
+        int maxAttempts = config.effectiveMaxAttempts();
         HrmsApiException last = null;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -58,13 +69,15 @@ public class HrmsRetryExecutor {
                 last = ex;
 
                 if (!ex.isRetryable()) {
-                    log.warn("{} failed permanently on attempt {}/{}: {}",
+                    // Retrying a 400 or a 401 re-sends the same rejected request, so this
+                    // is reported as a failure immediately rather than after four waits.
+                    log.error("{} FAILED permanently on attempt {}/{} and will not be retried: {}",
                             description, attempt, maxAttempts, ex.describe());
                     throw ex;
                 }
                 if (attempt == maxAttempts) {
-                    log.error("{} still failing after {} attempt(s), giving up: {}",
-                            description, maxAttempts, ex.describe());
+                    log.error("{} FAILED after all {} attempt(s) ({} retries). Giving up. Cause: {}",
+                            description, maxAttempts, maxAttempts - 1, ex.describe(), ex);
                     throw ex;
                 }
 

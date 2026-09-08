@@ -87,4 +87,18 @@ public final class MoneyUtils {
     public static BigDecimal subtract(BigDecimal minuend, BigDecimal subtrahend) {
         return minuend.subtract(subtrahend).setScale(SCALE, RoundingMode.HALF_UP);
     }
+
+    /**
+     * Mean of {@code total} over {@code count} items, at the money scale.
+     *
+     * <p>Rounds {@code HALF_UP}, which is the one place in this class rounding is allowed:
+     * an average is a derived statistic, not an amount anyone is paid. Returns
+     * {@code null} for a count of zero, since the mean of nothing is not zero.
+     */
+    public static BigDecimal average(BigDecimal total, int count) {
+        if (count <= 0 || total == null) {
+            return null;
+        }
+        return total.divide(BigDecimal.valueOf(count), SCALE, RoundingMode.HALF_UP);
+    }
 }

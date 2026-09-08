@@ -436,4 +436,106 @@ class HrmsClientTest {
                     assertThat(ex.getResponseBody()).endsWith("[truncated]");
                 });
     }
+
+    @Test
+    @DisplayName("no Authorization header is sent when no token is configured")
+    void omitsBearerTokenWhenAbsent() {
+        List<String> auth = new ArrayList<>();
+        responder = exchange -> {
+            auth.add(String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
+            sendJson(exchange, 200, "{\"items\": [], \"hasMore\": false}");
+        };
+
+        HrmsProperties properties = properties();
+        properties.setApiToken("   ");
+        clientFor(properties).fetchWorkers(0, 10, null);
+
+        assertThat(auth).containsExactly("null");
+    }
+
+    @Test
+    @DisplayName("the tenant header is sent only when a tenant is configured")
+    void sendsTenantHeaderWhenConfigured() {
+        List<String> tenants = new ArrayList<>();
+        responder = exchange -> {
+            tenants.add(String.valueOf(exchange.getRequestHeaders().getFirst("X-Tenant")));
+            sendJson(exchange, 200, "{\"items\": [], \"hasMore\": false}");
+        };
+
+        HrmsProperties withTenant = properties();
+        withTenant.setTenant("acme");
+        clientFor(withTenant).fetchWorkers(0, 10, null);
+
+        HrmsProperties withoutTenant = properties();
+        withoutTenant.setTenant("");
+        clientFor(withoutTenant).fetchWorkers(0, 10, null);
+
+        assertThat(tenants).containsExactly("acme", "null");
+    }
+
+    @Test
+    @DisplayName("the incremental-sync watermark is sent only when given")
+    void sendsUpdatedSinceOnlyWhenPresent() {
+        responder = exchange -> sendJson(exchange, 200, "{\"items\": [], \"hasMore\": false}");
+
+        client().fetchWorkers(0, 10, LocalDate.of(2026, 7, 1));
+        client().fetchWorkers(0, 10, null);
+
+        assertThat(receivedQueries.get(0)).contains("updatedSince=2026-07-01");
+        assertThat(receivedQueries.get(1)).doesNotContain("updatedSince");
+    }
+
+    @Test
+    @DisplayName("payslip period filters are omitted when not supplied")
+    void omitsPayslipPeriodFiltersWhenAbsent() {
+        responder = exchange -> sendJson(exchange, 200, "{\"items\": [], \"hasMore\": false}");
+
+        client().fetchPayslips(null, null, 0, 10);
+
+        assertThat(receivedQueries.getFirst())
+                .doesNotContain("periodStart")
+                .doesNotContain("periodEnd");
+    }
+
+    @Test
+    @DisplayName("a 204 with no body at all is reported as malformed rather than as empty data")
+    void emptyBodyIsMalformed() {
+        responder = exchange -> send(exchange, 200, null, null);
+
+        assertThatThrownBy(() -> client().fetchWorkers(0, 100, null))
+                .isInstanceOfSatisfying(HrmsApiException.class,
+                        ex -> assertThat(ex.getKind()).isEqualTo(HrmsFailureKind.MALFORMED_RESPONSE));
+    }
+
+    @Test
+    @DisplayName("a Retry-After given as an HTTP date is understood too")
+    void retryAfterAsHttpDate() {
+        responder = exchange -> {
+            String when = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+                    .format(java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).plusSeconds(120));
+            exchange.getResponseHeaders().add("Retry-After", when);
+            sendJson(exchange, 503, "{}");
+        };
+
+        assertThatThrownBy(() -> client().fetchWorkers(0, 100, null))
+                .isInstanceOfSatisfying(HrmsApiException.class, ex -> {
+                    assertThat(ex.getRetryAfter()).isNotNull();
+                    assertThat(ex.getRetryAfter().toSeconds()).isBetween(60L, 130L);
+                });
+    }
+
+    @Test
+    @DisplayName("a Retry-After date already in the past means retry immediately, not never")
+    void retryAfterInThePastIsZero() {
+        responder = exchange -> {
+            String when = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+                    .format(java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).minusHours(1));
+            exchange.getResponseHeaders().add("Retry-After", when);
+            sendJson(exchange, 503, "{}");
+        };
+
+        assertThatThrownBy(() -> client().fetchWorkers(0, 100, null))
+                .isInstanceOfSatisfying(HrmsApiException.class,
+                        ex -> assertThat(ex.getRetryAfter()).isEqualTo(Duration.ZERO));
+    }
 }

@@ -4,7 +4,6 @@ import com.payroll.demo.domain.EmployeeStatus;
 import com.payroll.demo.dto.PayrollDtos.DepartmentView;
 import com.payroll.demo.dto.PayrollDtos.EmployeeView;
 import com.payroll.demo.dto.PayrollDtos.PayPeriodView;
-import com.payroll.demo.dto.PayrollDtos.PayslipView;
 import com.payroll.demo.service.PayrollQueryService;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,6 +14,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
+/**
+ * Departments, employees and pay periods. Payslips and pay details live in
+ * {@link PayslipController}.
+ */
 @RestController
 @RequestMapping("/api")
 public class PayrollController {
@@ -38,11 +41,6 @@ public class PayrollController {
     @GetMapping("/employees/{employeeCode}")
     public EmployeeView employee(@PathVariable String employeeCode) {
         return payrollQueryService.findEmployee(employeeCode);
-    }
-
-    @GetMapping("/employees/{employeeCode}/payslips")
-    public List<PayslipView> payslips(@PathVariable String employeeCode) {
-        return payrollQueryService.listPayslipsFor(employeeCode);
     }
 
     @GetMapping("/pay-periods")

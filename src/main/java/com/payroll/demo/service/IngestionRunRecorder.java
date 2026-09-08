@@ -7,6 +7,8 @@ import com.payroll.demo.domain.IngestionStatus;
 import com.payroll.demo.domain.IngestionTrigger;
 import com.payroll.demo.repository.IngestionRunRepository;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +26,8 @@ import java.time.OffsetDateTime;
 @Service
 public class IngestionRunRecorder {
 
+    private static final Logger log = LoggerFactory.getLogger(IngestionRunRecorder.class);
+
     private final IngestionRunRepository runs;
 
     public IngestionRunRecorder(IngestionRunRepository runs) {
@@ -40,7 +44,11 @@ public class IngestionRunRecorder {
         run.setPeriodStart(periodStart);
         run.setPeriodEnd(periodEnd);
         run.setStartedAt(OffsetDateTime.now());
-        return runs.save(run).getId();
+
+        Long id = runs.save(run).getId();
+        log.info("Opened ingestion run {} (source={}, trigger={}, period {}..{})",
+                id, source, trigger, periodStart, periodEnd);
+        return id;
     }
 
     /** Closes the run, writing final counts and any rejected records. */
@@ -50,8 +58,10 @@ public class IngestionRunRecorder {
                        IngestionFailureKind failureKind,
                        String failureDetail,
                        RunTally tally) {
-        IngestionRun run = runs.findById(runId).orElseThrow(
-                () -> new IllegalStateException("ingestion run " + runId + " vanished before it could be closed"));
+        IngestionRun run = runs.findById(runId).orElseThrow(() -> {
+            log.error("Ingestion run {} vanished before it could be closed; its outcome is lost", runId);
+            return new IllegalStateException("ingestion run " + runId + " vanished before it could be closed");
+        });
 
         run.setStatus(status);
         run.setFinishedAt(OffsetDateTime.now());
@@ -68,5 +78,13 @@ public class IngestionRunRecorder {
             run.addError(error);
         }
         runs.save(run);
+
+        if (status == IngestionStatus.FAILED) {
+            log.error("Closed ingestion run {} as {} ({}): {}",
+                    runId, status, failureKind, failureDetail);
+        } else {
+            log.info("Closed ingestion run {} as {} ({} rejected record(s) stored)",
+                    runId, status, tally.getErrors().size());
+        }
     }
 }

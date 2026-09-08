@@ -2,7 +2,7 @@ package com.payroll.demo.service;
 
 import com.payroll.demo.domain.IngestionTrigger;
 import com.payroll.demo.dto.BulkUpsertResult;
-import com.payroll.demo.exception.BulkUpsertInProgressException;
+import com.payroll.demo.exception.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -60,7 +60,7 @@ public class IngestionScheduler {
                     IngestionTrigger.SCHEDULED, start, end, null, false);
             log.info("Scheduled ingestion completed as run {} ({}, committed={})",
                     result.runId(), result.status(), result.committed());
-        } catch (BulkUpsertInProgressException ex) {
+        } catch (ApiException ex) {
             log.info("Scheduled ingestion skipped: a run is already in progress");
         } catch (RuntimeException ex) {
             log.error("Scheduled ingestion failed outside the run recorder", ex);

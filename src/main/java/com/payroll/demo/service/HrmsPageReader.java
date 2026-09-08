@@ -48,6 +48,7 @@ public class HrmsPageReader {
      * @throws HrmsApiException if a page cannot be read after its retries
      */
     public List<HrmsWorker> collectWorkers(LocalDate updatedSince, Runnable attemptCounter) {
+        log.info("Fetching workers from the HRMS (updatedSince={})", updatedSince);
         return readAll("/workers",
                 (page, size) -> client.fetchWorkers(page, size, updatedSince),
                 attemptCounter);
@@ -56,6 +57,7 @@ public class HrmsPageReader {
     /** Reads every page of payslips for a period. */
     public List<HrmsPayslip> collectPayslips(LocalDate periodStart, LocalDate periodEnd,
                                              Runnable attemptCounter) {
+        log.info("Fetching payslips from the HRMS for period {}..{}", periodStart, periodEnd);
         return readAll("/payslips",
                 (page, size) -> client.fetchPayslips(periodStart, periodEnd, page, size),
                 attemptCounter);
@@ -70,14 +72,27 @@ public class HrmsPageReader {
 
         for (int page = 0; page < maxPages; page++) {
             final int current = page;
-            HrmsPage<T> result = retry.execute("GET " + endpoint + " page " + current, () -> {
-                attemptCounter.run();
-                return source.fetch(current, size);
-            });
+            HrmsPage<T> result;
+            try {
+                result = retry.execute("GET " + endpoint + " page " + current, () -> {
+                    attemptCounter.run();
+                    return source.fetch(current, size);
+                });
+            } catch (HrmsApiException ex) {
+                // The retries are already exhausted by this point. Logged here as well as
+                // in the executor so the failure is tied to the read that was in progress
+                // and to how much of it had already succeeded.
+                log.error("HRMS read of {} failed at page {} after {} item(s) had been collected: {}",
+                        endpoint, current, collected.size(), ex.describe(), ex);
+                throw ex;
+            }
 
             collected.addAll(result.safeItems());
+            log.info("{} page {}: {} item(s), {} so far", endpoint, current,
+                    result.safeItems().size(), collected.size());
 
             if (!result.moreAvailable(size)) {
+                log.info("{} complete: {} item(s) over {} page(s)", endpoint, collected.size(), current + 1);
                 return collected;
             }
         }

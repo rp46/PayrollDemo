@@ -143,7 +143,6 @@ class HrmsRetryExecutorTest {
     @DisplayName("an absurd Retry-After cannot park the thread indefinitely")
     void retryAfterIsCapped() {
         HrmsProperties.Retry retry = policy();
-        retry.setMaxAttempts(2);
         retry.setMaxRetryAfter(Duration.ofSeconds(30));
         HrmsRetryExecutor executor = executorWith(retry);
 
@@ -152,7 +151,8 @@ class HrmsRetryExecutorTest {
                     429, null, Duration.ofHours(6), null);
         })).isInstanceOf(HrmsApiException.class);
 
-        assertThat(slept).containsExactly(Duration.ofSeconds(30));
+        assertThat(slept).containsExactly(
+                Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofSeconds(30));
     }
 
     @Test
@@ -169,10 +169,35 @@ class HrmsRetryExecutorTest {
     }
 
     @Test
-    @DisplayName("maxAttempts=1 turns retrying off entirely")
-    void singleAttemptDisablesRetry() {
+    @DisplayName("retrying cannot be configured below three retries")
+    void retriesCannotBeConfiguredBelowTheFloor() {
+        // The HRMS is slow and drops requests, so a deployment that sets this to 1 has
+        // made a mistake. The floor is raised rather than honoured.
+        for (int configured : new int[]{-5, 0, 1, 2, 3}) {
+            slept.clear();
+            HrmsProperties.Retry retry = policy();
+            retry.setMaxAttempts(configured);
+            AtomicInteger attempts = new AtomicInteger();
+            HrmsRetryExecutor executor = executorWith(retry);
+
+            assertThatThrownBy(() -> executor.execute("GET /workers", () -> {
+                attempts.incrementAndGet();
+                throw new HrmsApiException(HrmsFailureKind.SERVER_ERROR, "down");
+            })).isInstanceOf(HrmsApiException.class);
+
+            assertThat(attempts)
+                    .as("max-attempts=%s must still make %s attempts", configured,
+                            HrmsProperties.Retry.MIN_ATTEMPTS)
+                    .hasValue(HrmsProperties.Retry.MIN_ATTEMPTS);
+            assertThat(slept).hasSize(HrmsProperties.Retry.MIN_RETRIES);
+        }
+    }
+
+    @Test
+    @DisplayName("a configuration above the floor is honoured as given")
+    void higherAttemptCountsAreHonoured() {
         HrmsProperties.Retry retry = policy();
-        retry.setMaxAttempts(1);
+        retry.setMaxAttempts(6);
         AtomicInteger attempts = new AtomicInteger();
         HrmsRetryExecutor executor = executorWith(retry);
 
@@ -181,8 +206,23 @@ class HrmsRetryExecutorTest {
             throw new HrmsApiException(HrmsFailureKind.SERVER_ERROR, "down");
         })).isInstanceOf(HrmsApiException.class);
 
-        assertThat(attempts).hasValue(1);
-        assertThat(slept).isEmpty();
+        assertThat(attempts).hasValue(6);
+    }
+
+    @Test
+    @DisplayName("a retryable failure gets at least three retries before it is given up on")
+    void retryableFailureGetsAtLeastThreeRetries() {
+        AtomicInteger attempts = new AtomicInteger();
+        HrmsRetryExecutor executor = executorWith(policy());
+
+        assertThatThrownBy(() -> executor.execute("GET /workers", () -> {
+            attempts.incrementAndGet();
+            throw new HrmsApiException(HrmsFailureKind.TIMEOUT, "read timed out");
+        })).isInstanceOf(HrmsApiException.class);
+
+        assertThat(attempts.get() - 1)
+                .as("retries, excluding the first attempt")
+                .isGreaterThanOrEqualTo(HrmsProperties.Retry.MIN_RETRIES);
     }
 
     @Test

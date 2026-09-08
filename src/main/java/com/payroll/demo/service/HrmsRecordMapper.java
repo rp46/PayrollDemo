@@ -10,6 +10,8 @@ import com.payroll.demo.dto.HrmsDtos.HrmsWorker;
 import com.payroll.demo.exception.IngestionRecordException;
 import com.payroll.demo.util.MoneyUtils;
 import com.payroll.demo.util.TextUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -30,6 +32,16 @@ import java.util.Set;
  */
 @Component
 public class HrmsRecordMapper {
+
+    /**
+     * Rejections are logged at DEBUG here and at WARN by the caller.
+     *
+     * <p>This method runs once per record, so a feed of ten thousand rows would emit ten
+     * thousand lines at INFO. The caller logs each rejection with its reason and the run
+     * stores it in {@code ingestion_run_errors}, so nothing is lost by keeping this quiet
+     * until someone turns DEBUG on to trace a specific record.
+     */
+    private static final Logger log = LoggerFactory.getLogger(HrmsRecordMapper.class);
 
     // Column widths from V1; catching these here gives a readable reason instead of a
     // driver-level constraint violation halfway through a batch.
@@ -257,6 +269,7 @@ public class HrmsRecordMapper {
     }
 
     private static IngestionRecordException reject(IngestionRecordType type, String recordId, String reason) {
+        log.debug("Rejecting {} {}: {}", type, recordId, reason);
         return new IngestionRecordException(type, recordId, reason);
     }
 }

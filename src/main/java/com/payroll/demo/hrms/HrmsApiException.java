@@ -84,7 +84,10 @@ public class HrmsApiException extends RuntimeException {
         if (body == null) {
             return null;
         }
-        String collapsed = body.strip().replaceAll("\s+", " ");
+        // "\\s+" is the regex for any whitespace. Note the escaping: the bare "\s" is a
+        // Java string escape for a single space, which compiles happily but leaves
+        // newlines and tabs in place — exactly what this is meant to remove.
+        String collapsed = body.strip().replaceAll("\\s+", " ");
         return collapsed.length() <= MAX_BODY_SNIPPET
                 ? collapsed
                 : collapsed.substring(0, MAX_BODY_SNIPPET) + "…[truncated]";

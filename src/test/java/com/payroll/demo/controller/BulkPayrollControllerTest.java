@@ -5,7 +5,7 @@ import com.payroll.demo.domain.IngestionStatus;
 import com.payroll.demo.domain.IngestionTrigger;
 import com.payroll.demo.dto.BulkUpsertResult;
 import com.payroll.demo.dto.BulkWriteCounts;
-import com.payroll.demo.exception.BulkUpsertInProgressException;
+import com.payroll.demo.exception.ApiException;
 import com.payroll.demo.service.BulkPayrollService;
 
 import org.junit.jupiter.api.DisplayName;
@@ -118,7 +118,7 @@ class BulkPayrollControllerTest {
     @DisplayName("a concurrent run is refused with 409")
     void concurrentRunReturnsConflict() throws Exception {
         when(service.upsertAll(any(), any(), any(), any(), anyBoolean()))
-                .thenThrow(new BulkUpsertInProgressException());
+                .thenThrow(ApiException.conflict("A bulk payroll upsert is already in progress; wait for it to finish before starting another."));
 
         mvc.perform(post("/api/payroll/bulk-upsert").contentType("application/json").content("{}"))
                 .andExpect(status().isConflict());

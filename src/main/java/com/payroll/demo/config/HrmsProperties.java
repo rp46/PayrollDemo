@@ -38,8 +38,18 @@ public class HrmsProperties {
     /** Backoff policy applied to retryable failures only. */
     public static class Retry {
 
-        /** Total attempts including the first. {@code 1} disables retrying. */
-        private int maxAttempts = 4;
+        /**
+         * Fewest attempts allowed: the first call plus {@value #MIN_RETRIES} retries.
+         *
+         * <p>The HRMS is slow and drops requests, so a single attempt is never enough to
+         * distinguish a blip from an outage. Configuring below this is treated as a mistake
+         * and raised, with a warning, rather than silently honoured.
+         */
+        public static final int MIN_RETRIES = 3;
+        public static final int MIN_ATTEMPTS = MIN_RETRIES + 1;
+
+        /** Total attempts including the first. Clamped up to {@link #MIN_ATTEMPTS}. */
+        private int maxAttempts = MIN_ATTEMPTS;
 
         /** Delay before the second attempt. */
         private Duration initialBackoff = Duration.ofMillis(500);
@@ -58,6 +68,16 @@ public class HrmsProperties {
 
         public int getMaxAttempts() {
             return maxAttempts;
+        }
+
+        /** Attempts actually used, never fewer than {@link #MIN_ATTEMPTS}. */
+        public int effectiveMaxAttempts() {
+            return Math.max(MIN_ATTEMPTS, maxAttempts);
+        }
+
+        /** True when the configured value was below the floor and had to be raised. */
+        public boolean isBelowMinimum() {
+            return maxAttempts < MIN_ATTEMPTS;
         }
 
         public void setMaxAttempts(int maxAttempts) {

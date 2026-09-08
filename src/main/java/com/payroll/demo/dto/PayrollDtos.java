@@ -1,6 +1,5 @@
 package com.payroll.demo.dto;
 
-
 import com.payroll.demo.domain.ComponentType;
 import com.payroll.demo.domain.EmployeeStatus;
 import com.payroll.demo.domain.PayPeriodStatus;
@@ -8,6 +7,7 @@ import com.payroll.demo.domain.PayslipStatus;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -54,10 +54,59 @@ public final class PayrollDtos {
             String employeeCode,
             LocalDate periodStart,
             LocalDate periodEnd,
+            LocalDate payDate,
             BigDecimal grossPay,
             BigDecimal totalDeductions,
             BigDecimal netPay,
             PayslipStatus status,
             List<PayslipLineView> lines) {
+    }
+
+    /**
+     * Totals over the payslips in scope.
+     *
+     * @param averageNetPerPayslip {@code null} when there are no payslips, because the mean
+     *                             of nothing is not zero
+     */
+    public record PaySummaryView(
+            int payslipCount,
+            LocalDate firstPeriodStart,
+            LocalDate lastPeriodEnd,
+            BigDecimal totalGross,
+            BigDecimal totalDeductions,
+            BigDecimal totalNet,
+            BigDecimal averageNetPerPayslip) {
+    }
+
+    /** One earning or deduction code, totalled across the payslips in scope. */
+    public record ComponentTotalView(
+            String componentCode,
+            ComponentType componentType,
+            BigDecimal total,
+            int occurrences) {
+    }
+
+    /**
+     * An employee's pay picture: standing compensation, plus what has actually been paid.
+     *
+     * <p>The {@code scope*} fields echo the filters the totals were computed under, so a
+     * figure can never be read without knowing what went into it.
+     */
+    public record PayDetailsView(
+            String employeeCode,
+            String firstName,
+            String lastName,
+            EmployeeStatus status,
+            String departmentCode,
+            LocalDate hireDate,
+            LocalDate terminationDate,
+            BigDecimal baseSalary,
+            OffsetDateTime lastSyncedAt,
+            LocalDate scopeFrom,
+            LocalDate scopeTo,
+            PayslipStatus scopeStatus,
+            PaySummaryView summary,
+            List<ComponentTotalView> componentTotals,
+            PayslipView latestPayslip) {
     }
 }

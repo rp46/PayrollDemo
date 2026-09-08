@@ -5,9 +5,14 @@ them in the `payroll` Postgres database.
 
 ## Endpoints
 
-| Method | Path                       | Purpose                                                |
-|--------|----------------------------|--------------------------------------------------------|
-| POST   | `/api/payroll/bulk-upsert` | Trigger the sync; one transaction, commit or roll back |
+| Method | Path                                    | Purpose                                                |
+|--------|-----------------------------------------|--------------------------------------------------------|
+| POST   | `/api/payroll/bulk-upsert`              | Trigger the sync; one transaction, commit or roll back |
+| GET    | `/api/employees/{code}/pay-details`     | Compensation plus totals over the payslips in scope    |
+| GET    | `/api/employees/{code}/payslips`        | That employee's payslips, newest period first          |
+| GET    | `/api/employees/{code}/payslips/latest` | Their most recent payslip                              |
+| GET    | `/api/payslips/{id}`                    | One payslip by id                                      |
+| GET    | `/api/pay-periods/{id}/payslips`        | The payroll register for one run                       |
 
 ```bash
 curl -X POST http://localhost:8080/api/payroll/bulk-upsert \
@@ -27,6 +32,166 @@ only 4xx this API returns is 409, when a run is already in progress.
 The response carries every rejected record inline, so a caller sees what was refused
 without a second request. Runs are also persisted to `ingestion_runs` / `ingestion_run_errors`
 for history, but there is no HTTP endpoint over them — query the tables directly.
+
+## Reading pay data
+
+`pay-details` and the payslip listing take the same optional filters:
+
+| Param    | Meaning                                                     |
+|----------|-------------------------------------------------------------|
+| `from`   | include payslips whose period **ends** on or after this date |
+| `to`     | include payslips whose period **starts** on or before it     |
+| `status` | `DRAFT`, `APPROVED` or `PAID`; omit for all                  |
+
+The window is an overlap test, not containment, so a payslip counts if any part of its
+period falls inside it.
+
+```bash
+# everything
+curl http://localhost:8080/api/employees/E-1001/pay-details
+
+# a financial year, counting only what was actually paid
+curl 'http://localhost:8080/api/employees/E-1001/pay-details?from=2026-04-01&to=2027-03-31&status=PAID'
+```
+
+`pay-details` returns standing compensation (base salary, department, status, hire and
+termination dates) alongside a `summary` of the payslips in scope, a `componentTotals`
+breakdown by earning and deduction code, and the full `latestPayslip`. The filters are
+echoed back as `scopeFrom` / `scopeTo` / `scopeStatus`, so a total can never be read
+without knowing what went into it.
+
+`averageNetPerPayslip` is `null`, not `0`, when nothing is in scope — the mean of no
+payslips is undefined. Totals are `0.00`.
+
+An unknown employee, payslip or period is a 404. An employee who exists but has no
+payslips gets an empty list from the listing, and a 404 from `/payslips/latest` — those
+are different situations and the caller should be able to tell them apart.
+
+Aggregates are computed in Java, not by a SQL `GROUP BY`: the scope is one employee's
+payslips, the line items are loaded anyway for the breakdown, and doing the arithmetic in
+`MoneyUtils` keeps it under the same scale and comparison rules as every other amount here.
+
+### One trap worth knowing about
+
+The filtered query is written with `coalesce`, not the usual `(:param is null or ...)`:
+
+```sql
+and p.payPeriod.periodEnd >= coalesce(:from, p.payPeriod.periodEnd)
+```
+
+Postgres cannot infer the type of a parameter that only ever appears next to `NULL`, and
+fails with *"could not determine data type of parameter"* — but only once pgjdbc promotes
+the statement to a server-side prepared one, which happens after about five executions.
+It therefore works in a quick manual test and starts failing in production.
+`PayslipQueryServiceTest` drives the query well past that threshold on purpose.
+
+## Errors and logging
+
+Every failed request returns the same shape, so a client can parse a failure without
+knowing which endpoint produced it:
+
+```json
+{
+  "timestamp": "2026-09-09T03:54:42.573Z",
+  "status": 400,
+  "error": "BAD_REQUEST",
+  "message": "'to' (2026-01-01) must not be before 'from' (2027-01-01)",
+  "path": "/api/employees/W-5001/payslips"
+}
+```
+
+`error` is the HTTP status name, derived from `status` by one rule for the whole API so
+the two can never disagree. Branch on it rather than on the wording of `message`, which
+carries the specifics.
+
+### How a failure becomes a status
+
+Services validate their arguments up front (`Validate`) and run their work through
+`ServiceGuard`, which is the only place the translation happens:
+
+| Inside the service                                 | Out of the API | `error`               |
+|----------------------------------------------------|----------------|-----------------------|
+| Missing or blank argument, inverted range          | 400            | `BAD_REQUEST`         |
+| Unparseable query parameter or path variable       | 400            | `BAD_REQUEST`         |
+| `NullPointerException` and the bad-argument family | 400            | `BAD_REQUEST`         |
+| No such employee / payslip / pay period            | 404            | `NOT_FOUND`           |
+| A run is already in progress                       | 409            | `CONFLICT`            |
+| Database unreachable                               | 503            | `SERVICE_UNAVAILABLE` |
+
+### One exception class
+
+All of the above is raised through a single `ApiException` with four factory methods —
+`badRequest`, `notFound`, `conflict`, `unavailable` — which replaced seven classes that
+existed only to pair a message with a status:
+
+```java
+throw ApiException.notFound("No payslip with id " + payslipId);
+throw ApiException.badRequest("payslip id must be a positive id, but was " + id);
+```
+
+The only other exception in the package is `IngestionRecordException`, kept because it is a
+different thing: an internal signal for one bad record inside a feed, carrying the record
+type and external id for the audit row, which never becomes an HTTP response.
+
+`badRequest` covers almost everything. The other three survive because folding them into
+400 would throw away something the caller needs: a 404 says the request was well formed and
+simply named something absent, a 409 says nothing is wrong and the same call will work
+shortly, and a 503 says the fault is ours rather than theirs.
+
+The bad-argument row is worth being explicit about. A `NullPointerException` is a defect in
+this application, not a mistake by the caller, and 500 would normally be the more accurate
+signal. It is reported as 400 because a caller should never be shown a 5xx for a request
+that can be corrected — but the full stack trace is logged at ERROR every time, so a tidy
+400 on the wire never means an operator loses the detail. A genuinely unrecognised failure
+is still a 500; disguising that one would send whoever is reading it to look in the wrong
+place.
+
+A database outage is 503 rather than 400 for the same reason in reverse: nothing about the
+request was wrong, and retrying later is the correct response.
+
+### Logs
+
+`slf4j` throughout. Every service method logs `START` and `DONE` with its arguments and
+elapsed time, so one request is traceable end to end:
+
+```
+INFO  PayslipQueryService : START  build pay details for W-5001 (from=null, to=null, status=PAID)
+INFO  PayslipQueryService : Summarising 1 payslip(s) for W-5001
+INFO  PayslipQueryService : DONE   build pay details for W-5001 (from=null, to=null, status=PAID) in 75 ms
+```
+
+Levels are used consistently: INFO for what happened, WARN for a caller-caused rejection or
+a record the feed got wrong, ERROR for anything that needs an operator. Per-record
+validation logs at DEBUG — a feed of ten thousand rows would otherwise emit ten thousand
+INFO lines, and each rejection is already logged once by the caller and stored in
+`ingestion_run_errors`.
+
+## Retries
+
+Every HRMS call goes through `HrmsRetryExecutor`, which makes **at least three retries**
+(four attempts) on any retryable failure. The floor is enforced, not merely defaulted:
+
+```
+WARN  HrmsRetryExecutor : payroll.hrms.retry.max-attempts is 1, below the floor of 4; using 4.
+                          The HRMS drops requests, so fewer than 3 retries cannot tell a blip from an outage.
+INFO  HrmsRetryExecutor : HRMS retry policy: 4 attempts (3 retries), backoff PT0.1S..PT0.3S x2.0 with 25% jitter
+```
+
+Configuring `max-attempts` below 4 raises it and warns; above 4 is honoured as given.
+Retries are still confined to failures where waiting can help (5xx, 429, timeouts,
+transport). A 400 or a 401 fails on the first attempt — re-sending an identical rejected
+request three more times only delays the report.
+
+When the retries are exhausted, the give-up is logged at ERROR twice on purpose: once by
+the executor with the cause, and once by `HrmsPageReader` with the read that was in
+progress and how much of it had already succeeded.
+
+```
+WARN  HrmsRetryExecutor : GET /workers page 0 failed on attempt 1/4 (SERVER_ERROR (HTTP 503) ...), retrying in 1000 ms
+...
+ERROR HrmsRetryExecutor : GET /workers page 0 FAILED after all 4 attempt(s) (3 retries). Giving up. Cause: ...
+ERROR HrmsPageReader    : HRMS read of /workers failed at page 0 after 0 item(s) had been collected: ...
+```
 
 ## Upstream API expected
 
@@ -172,6 +337,71 @@ Two reads run before the write, outside the transaction: which pay periods alrea
 `payDate` is only mandatory when one has to be created) and which employee codes already
 exist (so a payslip for an unknown worker is a clean rejection rather than a not-null
 violation that would take the whole batch down).
+
+---
+
+# Tests and coverage
+
+```bash
+./mvnw verify          # runs the suite, writes the report, enforces the floors
+```
+
+Report: `target/site/jacoco/index.html`.
+
+| Counter     | Covered   |
+|-------------|-----------|
+| Instruction | 98.99%    |
+| Line        | 98.64%    |
+| Branch      | 91.94%    |
+| Method      | 99.00%    |
+| Complexity  | 93.31%    |
+
+370 tests across 71 measured classes.
+
+## The floors are enforced
+
+`jacoco:check` runs in `verify` and **fails the build** below 90% line or 85% branch. They
+are floors, not targets: set under what the suite actually achieves, so a real regression
+breaks the build while an ordinary refactor does not. Confirmed to bite:
+
+```
+[WARNING] Rule violated for bundle demo: lines covered ratio is 0.986, but expected minimum is 0.999
+[INFO] BUILD FAILURE
+```
+
+Only `DemoApplication` is excluded — a `main` method with nothing to assert. The DTO
+records are measured rather than excluded, because several of them carry real logic
+(`HrmsPage.moreAvailable`, `PayrollBatch.totalLines`, the `BulkUpsertResult` factories) and
+excluding a package to flatter a number defeats the point of measuring.
+
+JaCoCo 0.8.15 is pinned because anything older cannot read Java 26 class files.
+
+## What the suite covers
+
+* **Unit** — every service, the mapper, the retry policy, the utils, the DTO logic, the
+  entity association helpers. Mocked collaborators, no I/O.
+* **Web** — `@WebMvcTest` per controller plus the global handler: parameter binding, status
+  mapping, error bodies. The handler branches no current route can reach are exercised
+  directly, since they become reachable the moment an endpoint is added.
+* **Database** — `BulkPayrollRepositoryTest` and `PayslipQueryServiceTest` run against real
+  Postgres. Rollback, and the SQL that only misbehaves against a real driver, cannot be
+  demonstrated any other way. Both namespace their rows and delete them afterwards.
+* **Socket** — `HrmsClientTest` runs against a real HTTP server for the failures that do not
+  reproduce against a mocked stack: read timeouts, refused connections, truncated bodies.
+
+## Two bugs the tests found
+
+Worth recording, because both passed a casual look and neither was hypothetical:
+
+* `(:param is null or ...)` in the payslip query. Postgres cannot infer the type of a
+  parameter that only ever sits beside `NULL`, and fails once the driver promotes the
+  statement to a server-side prepared one — after roughly five executions, not the first.
+  It would have passed a manual smoke test and started failing in production. Rewritten
+  with `coalesce`; a test now drives the query well past that threshold.
+* `replaceAll("\s+", " ")` written with a single backslash. Since Java 15, `"\s"` in a
+  string literal is the escape for a space, so it compiled cleanly and collapsed runs of
+  spaces while leaving newlines and tabs intact — quietly defeating the one-line-for-logs
+  intent for HRMS error bodies.
 
 ---
 

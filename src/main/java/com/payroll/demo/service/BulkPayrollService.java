@@ -17,14 +17,15 @@ import com.payroll.demo.dto.PayrollRows.PayslipKey;
 import com.payroll.demo.dto.PayrollRows.PayslipLineRow;
 import com.payroll.demo.dto.PayrollRows.PayslipRow;
 import com.payroll.demo.dto.PayrollRows.PeriodKey;
-import com.payroll.demo.exception.BulkUpsertInProgressException;
+import com.payroll.demo.exception.ApiException;
 import com.payroll.demo.exception.IngestionRecordException;
 import com.payroll.demo.repository.BulkPayrollRepository;
-import com.payroll.demo.util.FailureDetails;
 import com.payroll.demo.util.FailureDetails.Failure;
+import com.payroll.demo.util.FailureDetails;
 import com.payroll.demo.util.MoneyUtils;
 import com.payroll.demo.util.SingleFlightGuard;
 import com.payroll.demo.util.TextUtils;
+import com.payroll.demo.util.Validate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -94,7 +95,16 @@ public class BulkPayrollService {
                                       LocalDate periodEnd,
                                       LocalDate updatedSince,
                                       boolean strict) {
-        return guard.run(BulkUpsertInProgressException::new,
+        // Checked before a run row is opened: an impossible window would otherwise be
+        // recorded as a failed run when it is really a malformed request.
+        Validate.requireValidRange(periodStart, periodEnd);
+        if (periodStart == null ^ periodEnd == null) {
+            throw ApiException.badRequest(
+                    "periodStart and periodEnd must be given together, or both omitted to sync workers only");
+        }
+
+        return guard.run(() -> ApiException.conflict(
+                        "A bulk payroll upsert is already in progress; wait for it to finish before starting another."),
                 () -> run(trigger, periodStart, periodEnd, updatedSince, strict));
     }
 
@@ -117,7 +127,14 @@ public class BulkPayrollService {
             }
 
             // --- 2. Transform (pure) ----------------------------------------
+            log.info("Run {}: transforming {} worker(s) and {} payslip(s) into payroll rows",
+                    runId, workers.size(), payslips.size());
             PayrollBatch batch = transform(workers, payslips, tally);
+            log.info("Run {}: batch ready - {} department(s), {} employee(s), {} period(s), "
+                            + "{} payslip(s), {} line(s); {} record(s) rejected",
+                    runId, batch.departments().size(), batch.employees().size(),
+                    batch.payPeriods().size(), batch.payslips().size(), batch.totalLines(),
+                    tally.getRecordsRejected());
 
             if (strict && tally.hasRejections()) {
                 log.warn("Bulk upsert run {} aborted before writing: strict mode and {} rejected record(s)",
@@ -129,7 +146,9 @@ public class BulkPayrollService {
             }
 
             // --- 3. Write (one transaction: commit or rollback) -------------
+            log.info("Run {}: opening the write transaction", runId);
             BulkWriteCounts counts = repository.applyBatch(batch);
+            log.info("Run {}: committed - {}", runId, counts);
             tally.recordWritten(counts.employees(), counts.payslips());
 
             IngestionStatus status = tally.hasRejections() ? IngestionStatus.PARTIAL : IngestionStatus.SUCCEEDED;
