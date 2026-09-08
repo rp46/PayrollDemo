@@ -1,8 +1,11 @@
 package com.payroll.demo.hrms;
 
-import com.payroll.demo.hrms.HrmsDtos.HrmsPage;
-import com.payroll.demo.hrms.HrmsDtos.HrmsPayslip;
-import com.payroll.demo.hrms.HrmsDtos.HrmsWorker;
+import com.payroll.demo.config.HrmsClientConfig;
+import com.payroll.demo.config.HrmsProperties;
+import com.payroll.demo.dto.HrmsDtos.HrmsPage;
+import com.payroll.demo.dto.HrmsDtos.HrmsPayslip;
+import com.payroll.demo.dto.HrmsDtos.HrmsWorker;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;

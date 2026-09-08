@@ -1,5 +1,7 @@
 package com.payroll.demo.hrms;
 
+import com.payroll.demo.config.HrmsProperties;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
