@@ -1,5 +1,7 @@
 package com.payroll.demo.hrms;
 
+import com.payroll.demo.config.HrmsProperties;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

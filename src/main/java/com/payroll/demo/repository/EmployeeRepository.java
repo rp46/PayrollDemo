@@ -2,6 +2,7 @@ package com.payroll.demo.repository;
 
 import com.payroll.demo.domain.Employee;
 import com.payroll.demo.domain.EmployeeStatus;
+
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
